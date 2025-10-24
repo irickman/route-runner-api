@@ -1,0 +1,17 @@
+# Dependencies
+node_modules/
+
+# Wrangler
+.wrangler/
+dist/
+
+# Environment variables
+.env
+.dev.vars
+
+# OS files
+.DS_Store
+*.log
+
+# Local documentation
+README.local.md

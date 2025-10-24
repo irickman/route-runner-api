@@ -1,0 +1,10 @@
+name = "route-runner-api"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+workers_dev = true
+preview_urls = true
+
+[[kv_namespaces]]
+binding = "SESSIONS"
+id = "9f6bd78689bf481db3cd5b7f4e4a3e74"
+preview_id = "3c86e46412e6485ba2c29ac27aec6f9f"

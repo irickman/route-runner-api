@@ -1,0 +1,26 @@
+{
+  "name": "route-runner-api",
+  "version": "1.0.0",
+  "description": "Cloudflare Workers API for generating running routes",
+  "main": "src/index.ts",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "./test-api.sh",
+    "test-local": "curl -X POST http://localhost:8787/api/generate-route -H \"Content-Type: application/json\" -d '{\"query\": \"5 mile loop from Space Needle\", \"location\": {\"lat\": 47.6205, \"lng\": -122.3493}}'",
+    "test-production": "API_URL=https://route-runner-api.route-runner.workers.dev ./test-api.sh"
+  },
+  "keywords": [
+    "cloudflare",
+    "workers",
+    "running",
+    "routes"
+  ],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20251014.0",
+    "typescript": "^5.9.3",
+    "wrangler": "^4.44.0"
+  }
+}
