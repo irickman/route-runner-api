@@ -8,11 +8,11 @@
 # ============================================================================
 
 # Your route query (describe what you want)
-QUERY="10 mile loop that passes through Carkeek Park and Golden Gardens beach and has less than 800 feet of elevation gain, starting from Zoka Coffee roasters in Tangletown and ending at the Ballard Locks salmon ladder"
+QUERY="10 mile one way route that goes around green lake and continues on the burke gilman trail and ends at Laurelhurst elemtnary school"
 
 # Starting location (latitude and longitude)
-LAT=47.66916302734904
-LNG=-122.33288567520452
+LAT=47.665110896471
+LNG=-122.3280966245202
 
 # API endpoint (production by default)
 API_URL="https://route-runner-api.route-runner.workers.dev"

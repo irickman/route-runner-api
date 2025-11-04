@@ -1,3 +1,6 @@
+import { formatLocationsForPrompt, resolveLocations } from './agents/landmarkAgent';
+import { Location } from './types';
+
 // ============================================================================
 // TYPE DEFINITIONS
 // ============================================================================
@@ -6,11 +9,6 @@ export interface Env {
   SESSIONS: KVNamespace;
   ANTHROPIC_API_KEY: string;
   MAPBOX_TOKEN: string;
-}
-
-interface Location {
-  lat: number;
-  lng: number;
 }
 
 interface GenerateRouteRequest {
@@ -122,20 +120,75 @@ function handleOptions(): Response {
 // CLAUDE API - INTENT PARSING
 // ============================================================================
 
-const SEATTLE_LANDMARKS = {
-  'space needle': { lat: 47.6205, lng: -122.3493 },
-  'kerry park': { lat: 47.6295, lng: -122.3598 },
-  'pike place market': { lat: 47.6097, lng: -122.3425 },
-  'green lake': { lat: 47.6808, lng: -122.3290 },
-};
+const CLAUDE_SYSTEM_PROMPT = `You are a running route planner. You help parse natural language queries into structured route data.
 
-const CLAUDE_SYSTEM_PROMPT = `You are a running route planner for Seattle. You help parse natural language queries into structured route data.
+You will receive:
+- The user's location.
+- Optionally, a "Nearby locations" section listing places the Location Agent found within 25 miles of the user. Each line is formatted as:
+  Name — type — latitude, longitude — purpose=landmark/destination/perimeter — extra notes (if provided).
+- Purpose describes how the user referenced the place (destination = potential start/end or turnaround, perimeter = outline to trace, landmark = mid-route waypoint context).
 
-Known Seattle landmarks:
-- Space Needle: (47.6205, -122.3493)
-- Kerry Park: (47.6295, -122.3598)
-- Pike Place Market: (47.6097, -122.3425)
-- Green Lake: (47.6808, -122.3290)
+CRITICAL: When a user specifies a distance (e.g., "10 mile run"), the total geodesic length from start → waypoints → end MUST be within ±10% of that distance. If your draft is outside that band, adjust the coordinates and re-check before returning JSON.
+
+Waypoint guidance:
+- Keep successive waypoints roughly 0.4-0.7 miles apart; never exceed 1.0 mile between points.
+- Provide at least 1 waypoint per mile when possible and cap the list at 50 waypoints to support ultra distances.
+- Add distance with gentle zigzags or compact loops instead of far-flung detours.
+
+Loops / round trips:
+- Start and end coordinates must match exactly.
+- Push waypoints outward so the halfway point is about distance_miles / 2, then return to the start.
+
+Out-and-back routes:
+- The furthest waypoint should be approximately distance_miles / 2 from the start.
+- The route should retrace its path from that turnaround point.
+
+"Run around <destination>" (stadium, body of water, neighborhood, etc.):
+- Treat the request as a perimeter loop hugging the outer edge of the destination.
+- If the Location Agent provides perimeter_points or a bounding box, shape waypoints along that outline before returning to the start.
+- If no perimeter data is available, approximate the perimeter by spacing waypoints around the feature while staying on plausible running paths.
+
+Elevation preferences:
+- "Flat"/"easy" → set max_elevation_gain_feet ≤ 150 and favor low-lying terrain.
+- "Hilly"/"challenging" → set max_elevation_gain_feet ≥ 300 and include climbs.
+- If no elevation preference is stated, leave max_elevation_gain_feet null.
+
+EXAMPLE ROUTES (for reference):
+
+Example 1: "8.5 mile run around Lake Union"
+- Type: Perimeter loop around landmark
+- Start/End: Same coordinates (loop closure)
+- Sampled waypoints (12 total, ~0.7 mi spacing):
+  {"start": {"lat": 47.6107, "lng": -122.3356}, "waypoints": [{"lat": 47.6259, "lng": -122.3385}, {"lat": 47.6433, "lng": -122.3268}, {"lat": 47.6513, "lng": -122.3304}, {"lat": 47.6442, "lng": -122.3446}, {"lat": 47.6226, "lng": -122.3383}], "end": {"lat": 47.6107, "lng": -122.3356}, "distance_miles": 8.5}
+
+Example 2: "12.5 mile loop with less than 800 feet of elevation gain"
+- Type: Distance + elevation constraint
+- Start/End: Same coordinates (loop closure)
+- Sampled waypoints (18 total, ~0.7 mi spacing):
+  {"start": {"lat": 47.6758, "lng": -122.2691}, "waypoints": [{"lat": 47.6671, "lng": -122.3021}, {"lat": 47.6873, "lng": -122.3123}, {"lat": 47.7139, "lng": -122.3125}, {"lat": 47.7211, "lng": -122.3020}, {"lat": 47.7136, "lng": -122.2774}], "end": {"lat": 47.6793, "lng": -122.2654}, "distance_miles": 12.5, "max_elevation_gain_feet": 800}
+
+Example 3: "4 mile lollipop loop around Lake Waneka"
+- Type: Out-and-back with loop at turnaround
+- Pattern: Approach stick (1 mi) → lake perimeter loop (2 mi) → return via same stick (1 mi)
+- Sampled waypoints (6 total, densely packed around lake):
+  {"start": {"lat": 39.9886, "lng": -105.0886}, "waypoints": [{"lat": 39.9942, "lng": -105.1056}, {"lat": 39.9973, "lng": -105.1123}, {"lat": 39.9931, "lng": -105.1129}, {"lat": 39.9942, "lng": -105.1065}], "end": {"lat": 39.9886, "lng": -105.0886}, "distance_miles": 4.0}
+
+Example 4: "7 mile run through Carkeek Park ending at Golden Gardens"
+- Type: Point-to-point with landmark waypoint
+- Start ≠ End (not a loop)
+- Sampled waypoints (10 total, route forced through Carkeek Park):
+  {"start": {"lat": 47.6869, "lng": -122.3364}, "waypoints": [{"lat": 47.6979, "lng": -122.3581}, {"lat": 47.7089, "lng": -122.3660}, {"lat": 47.7110, "lng": -122.3796}, {"lat": 47.6948, "lng": -122.3789}], "end": {"lat": 47.6833, "lng": -122.4029}, "distance_miles": 7.0}
+
+Example 5: "21 mile run through Rock Creek Park, National Mall, Anacostia River Trail, and Rachel Carson Greenway"
+- Type: Multi-landmark tour with loop closure
+- Start/End: Same coordinates (returns to start after hitting all 4 landmarks)
+- Sampled waypoints (35 total, ~0.6 mi spacing to hit all landmarks):
+  {"start": {"lat": 38.9268, "lng": -77.0272}, "waypoints": [{"lat": 38.9046, "lng": -77.0564}, {"lat": 38.8898, "lng": -77.0060}, {"lat": 38.9085, "lng": -76.9535}, {"lat": 38.9319, "lng": -76.9389}, {"lat": 38.9496, "lng": -76.9676}], "end": {"lat": 38.9268, "lng": -77.0272}, "distance_miles": 21.0}
+
+Before returning JSON:
+1. Estimate the total distance using the Haversine formula across your coordinates.
+2. If the distance is outside ±10% of the target, adjust waypoint placement and re-check.
+3. Ensure coordinates remain plausible for running (no water crossings without bridges, avoid restricted zones).
 
 Parse the user's query and return ONLY valid JSON with this structure:
 {
@@ -143,22 +196,32 @@ Parse the user's query and return ONLY valid JSON with this structure:
   "waypoints": [{"lat": number, "lng": number}],
   "end": {"lat": number, "lng": number},
   "distance_miles": number,
-  "max_elevation_gain_feet": number,
+  "max_elevation_gain_feet": number | null,
   "preferences": ["scenic", "flat", "challenging", etc]
 }
 
 Rules:
-- If no start location is specified, use the provided user location
-- If it's a loop/round trip, start and end should be the same
-- Extract distance preferences (e.g., "5 mile run" -> distance_miles: 5)
-- Extract elevation preferences (e.g., "easy/flat" -> max_elevation_gain_feet: 100)
-- Return ONLY the JSON object, no markdown or explanations`;
+- If no start location is specified, use the provided user location.
+- For loops/round trips, start and end must be the same coordinate.
+- Extract distance and elevation preferences from the query.
+- Respond with ONLY the JSON object—no markdown or commentary.`;
 
 async function parseIntentWithClaude(
   query: string,
   userLocation: Location,
-  apiKey: string
+  apiKey: string,
+  locationContext?: string
 ): Promise<ParsedIntent> {
+  const messageSections = [
+    `User location: (${userLocation.lat}, ${userLocation.lng})`,
+  ];
+
+  if (locationContext && locationContext.trim().length > 0) {
+    messageSections.push(locationContext.trim());
+  }
+
+  messageSections.push(`Query: ${query}`);
+
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -167,13 +230,13 @@ async function parseIntentWithClaude(
       'anthropic-version': '2023-06-01',
     },
     body: JSON.stringify({
-      model: 'claude-3-5-haiku-20241022',
+      model: 'claude-3-5-sonnet-20241022',
       max_tokens: 1024,
       system: CLAUDE_SYSTEM_PROMPT,
       messages: [
         {
           role: 'user',
-          content: `User location: (${userLocation.lat}, ${userLocation.lng})\nQuery: ${query}`,
+          content: messageSections.join('\n\n'),
         },
       ],
     }),
@@ -215,7 +278,7 @@ async function generateRouteName(
       'anthropic-version': '2023-06-01',
     },
     body: JSON.stringify({
-      model: 'claude-3-5-haiku-20241022',
+      model: 'claude-3-5-sonnet-20241022',
       max_tokens: 50,
       messages: [
         {
@@ -415,6 +478,80 @@ function escapeXml(str: string): string {
 }
 
 // ============================================================================
+// DISTANCE CALCULATION AND WAYPOINT GENERATION
+// ============================================================================
+
+function estimateRouteDistance(points: Location[]): number {
+  // Uses Haversine formula to calculate distance between coordinates
+  let totalMiles = 0;
+
+  for (let i = 1; i < points.length; i++) {
+    const lat1 = points[i - 1].lat * Math.PI / 180;
+    const lat2 = points[i].lat * Math.PI / 180;
+    const dLat = lat2 - lat1;
+    const dLng = (points[i].lng - points[i - 1].lng) * Math.PI / 180;
+
+    const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+              Math.cos(lat1) * Math.cos(lat2) *
+              Math.sin(dLng / 2) * Math.sin(dLng / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    const km = 6371 * c; // Earth radius in km
+    totalMiles += km * 0.621371; // Convert to miles
+  }
+
+  return Math.round(totalMiles * 100) / 100; // Round to 2 decimal places
+}
+
+function generateAdditionalWaypoints(
+  start: Location,
+  end: Location,
+  targetMiles: number,
+  currentMiles: number
+): Location[] {
+  const additionalWaypoints: Location[] = [];
+  const shortage = targetMiles - currentMiles;
+
+  if (shortage <= 0) {
+    return additionalWaypoints; // No waypoints needed
+  }
+
+  // Calculate number of waypoints needed (one per 0.5-0.75 miles of shortage)
+  const numWaypoints = Math.max(1, Math.ceil(shortage / 0.6));
+
+  console.log(`🎯 Need ${shortage.toFixed(2)} more miles, generating ${numWaypoints} waypoints`);
+
+  // Calculate midpoint between start and end
+  const midLat = (start.lat + end.lat) / 2;
+  const midLng = (start.lng + end.lng) / 2;
+
+  // Create a perpendicular offset to extend the route
+  // This creates a detour that adds distance without going too far off course
+  const latDiff = end.lat - start.lat;
+  const lngDiff = end.lng - start.lng;
+
+  // Perpendicular vector (rotate 90 degrees)
+  const perpLat = -lngDiff;
+  const perpLng = latDiff;
+
+  // Normalize and scale based on shortage
+  const magnitude = Math.sqrt(perpLat * perpLat + perpLng * perpLng);
+  const scaleFactor = (shortage * 0.01) / (magnitude || 1); // Scale based on shortage
+
+  // Generate waypoints in a pattern to add distance
+  for (let i = 0; i < numWaypoints; i++) {
+    const t = (i + 1) / (numWaypoints + 1); // Position along the route (0 to 1)
+    const offsetMultiplier = Math.sin(t * Math.PI); // Create a smooth arc
+
+    additionalWaypoints.push({
+      lat: midLat + perpLat * scaleFactor * offsetMultiplier,
+      lng: midLng + perpLng * scaleFactor * offsetMultiplier
+    });
+  }
+
+  return additionalWaypoints;
+}
+
+// ============================================================================
 // ROUTE GENERATION ORCHESTRATOR
 // ============================================================================
 
@@ -422,26 +559,96 @@ async function generateRoute(
   request: GenerateRouteRequest,
   env: Env
 ): Promise<RouteData> {
-  // 1. Parse intent with Claude
-  const intent = await parseIntentWithClaude(
+  // 0. Resolve nearby locations (landmarks & destinations) near the user's position
+  const locationResult = await resolveLocations(
     request.query,
     request.location,
-    env.ANTHROPIC_API_KEY
+    env.MAPBOX_TOKEN
   );
 
-  // 2. Generate route with Mapbox
+  const locationContext = formatLocationsForPrompt(locationResult.locations);
+  if (locationResult.locations.length > 0) {
+    console.log('📍 Nearby locations:', JSON.stringify(locationResult.locations, null, 2));
+  }
+  if (locationResult.mentions.length > 0) {
+    console.log('📝 Location mentions:', JSON.stringify(locationResult.mentions, null, 2));
+  }
+
+  // 1. Parse intent with Claude
+  let intent = await parseIntentWithClaude(
+    request.query,
+    request.location,
+    env.ANTHROPIC_API_KEY,
+    locationContext || undefined
+  );
+
+  console.log('📋 Parsed intent:', JSON.stringify(intent, null, 2));
+
+  // 2. Validate and extend route if distance target is specified
+  if (intent.distance_miles && intent.distance_miles > 0) {
+    const coords = [intent.start, ...(intent.waypoints || []), intent.end];
+    const estimatedMiles = estimateRouteDistance(coords);
+
+    console.log(`📏 Target distance: ${intent.distance_miles} miles`);
+    console.log(`📏 Estimated distance from waypoints: ${estimatedMiles} miles`);
+    console.log(`📍 Current waypoints: ${intent.waypoints?.length || 0}`);
+
+    // If route is too short (< 80% of target), add waypoints
+    const threshold = intent.distance_miles * 0.8;
+    if (estimatedMiles < threshold) {
+      console.log(`⚠️  Route is too short! ${estimatedMiles} < ${threshold} (80% of target)`);
+
+      const additionalWaypoints = generateAdditionalWaypoints(
+        intent.start,
+        intent.end,
+        intent.distance_miles,
+        estimatedMiles
+      );
+
+      if (additionalWaypoints.length > 0) {
+        // Insert additional waypoints in the middle of the route
+        const originalWaypoints = intent.waypoints || [];
+        intent.waypoints = [...originalWaypoints, ...additionalWaypoints];
+
+        const newEstimate = estimateRouteDistance([
+          intent.start,
+          ...intent.waypoints,
+          intent.end
+        ]);
+
+        console.log(`✅ Added ${additionalWaypoints.length} waypoints`);
+        console.log(`📏 New estimated distance: ${newEstimate} miles`);
+      }
+    } else {
+      console.log(`✅ Route distance looks good: ${estimatedMiles} miles (>= ${threshold})`);
+    }
+  }
+
+  // 3. Generate route with Mapbox
   const mapboxRoute = await generateMapboxRoute(intent, env.MAPBOX_TOKEN);
 
-  // 3. Enrich with elevation data
+  // 4. Enrich with elevation data
   const elevation = await enrichWithElevation(mapboxRoute.geometry);
 
-  // 4. Calculate statistics
+  // 5. Calculate statistics
   const stats = calculateStats(mapboxRoute, elevation);
 
-  // 5. Generate creative route name
+  console.log(`📊 Final route stats: ${stats.distance_miles} miles, ${stats.elevation_gain_feet} ft gain, ${stats.num_turns} turns`);
+
+  // 6. Log distance accuracy if target was specified
+  if (intent.distance_miles) {
+    const accuracy = (stats.distance_miles / intent.distance_miles) * 100;
+    console.log(`🎯 Distance accuracy: ${accuracy.toFixed(1)}% (target: ${intent.distance_miles}, actual: ${stats.distance_miles})`);
+
+    if (stats.distance_miles < intent.distance_miles * 0.8) {
+      console.warn(`⚠️  WARNING: Final route is still ${stats.distance_miles} miles, target was ${intent.distance_miles} miles`);
+    }
+  }
+
+  // 7. Generate creative route name
   const name = await generateRouteName(request.query, stats, env.ANTHROPIC_API_KEY);
 
-  // 6. Create route data object
+  // 8. Create route data object
   const sessionId = request.sessionId || crypto.randomUUID();
   const routeId = crypto.randomUUID();
 
@@ -456,7 +663,7 @@ async function generateRoute(
     createdAt: new Date().toISOString(),
   };
 
-  // 7. Store in KV with 24 hour expiration
+  // 9. Store in KV with 24 hour expiration
   const kvKey = `route:${sessionId}:${routeId}`;
   await env.SESSIONS.put(kvKey, JSON.stringify(routeData), {
     expirationTtl: 86400, // 24 hours in seconds
