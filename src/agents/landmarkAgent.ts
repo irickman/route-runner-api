@@ -307,25 +307,32 @@ export async function resolveLocations(
 
   const locationMap = new Map<string, ResolvedLocation>();
 
-  for (const mention of mentions) {
+  const geocodingPromises = mentions.map(async (mention) => {
     try {
       const candidates = await geocodeMention(mention, userLocation, mapboxToken);
-      for (const candidate of candidates) {
-        const key = `${candidate.name.toLowerCase()}_${candidate.coordinates.lat.toFixed(4)}_${candidate.coordinates.lng.toFixed(4)}`;
-        const existing = locationMap.get(key);
-
-        if (!existing || purposePriority(candidate.purpose) > purposePriority(existing.purpose)) {
-          locationMap.set(key, candidate);
-        } else if (existing && !existing.perimeter_points && candidate.perimeter_points) {
-          locationMap.set(key, {
-            ...existing,
-            perimeter_points: candidate.perimeter_points,
-            notes: candidate.notes ?? existing.notes,
-          });
-        }
-      }
+      return { mention, candidates };
     } catch (error) {
       console.warn(`Error resolving location "${mention.phrase}":`, error);
+      return { mention, candidates: [] };
+    }
+  });
+
+  const results = await Promise.all(geocodingPromises);
+
+  for (const { candidates } of results) {
+    for (const candidate of candidates) {
+      const key = `${candidate.name.toLowerCase()}_${candidate.coordinates.lat.toFixed(4)}_${candidate.coordinates.lng.toFixed(4)}`;
+      const existing = locationMap.get(key);
+
+      if (!existing || purposePriority(candidate.purpose) > purposePriority(existing.purpose)) {
+        locationMap.set(key, candidate);
+      } else if (existing && !existing.perimeter_points && candidate.perimeter_points) {
+        locationMap.set(key, {
+          ...existing,
+          perimeter_points: candidate.perimeter_points,
+          notes: candidate.notes ?? existing.notes,
+        });
+      }
     }
   }
 

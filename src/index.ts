@@ -388,8 +388,9 @@ async function generateRoute(
 
   // 3. Generate route with Mapbox
   let mapboxRoute = await generateMapboxRoute(intent, env.MAPBOX_TOKEN);
-  let elevation = await enrichWithElevation(mapboxRoute.geometry);
-  let stats = calculateStats(mapboxRoute, elevation);
+
+  // Calculate initial stats without elevation to check distance accuracy
+  let stats = calculateStats(mapboxRoute, []);
 
   // ==========================================================================
   // ACCURACY IMPROVEMENT: ITERATIVE FEEDBACK LOOP
@@ -422,8 +423,8 @@ async function generateRoute(
 
         console.log('🔄 Retrying with new intent...');
         mapboxRoute = await generateMapboxRoute(intent, env.MAPBOX_TOKEN);
-        elevation = await enrichWithElevation(mapboxRoute.geometry);
-        stats = calculateStats(mapboxRoute, elevation);
+        // Recalculate stats for the new route (still without elevation)
+        stats = calculateStats(mapboxRoute, []);
         console.log(`✅ Retry result: ${stats.distance_miles} miles`);
       } catch (e) {
         console.error('❌ Self-correction failed:', e);
@@ -432,10 +433,15 @@ async function generateRoute(
     }
   }
 
-  console.log(`📊 Final route stats: ${stats.distance_miles} miles, ${stats.elevation_gain_feet} ft gain, ${stats.num_turns} turns`);
+  // 4. Enrich with elevation and generate name in parallel
+  // We pass the current stats (with 0 elevation) to generateName to avoid waiting
+  const [elevation, name] = await Promise.all([
+    enrichWithElevation(mapboxRoute.geometry),
+    provider.generateName(request.query, stats)
+  ]);
 
-  // 7. Generate creative route name
-  const name = await provider.generateName(request.query, stats);
+  // 5. Finalize stats with actual elevation data
+  stats = calculateStats(mapboxRoute, elevation);
 
   // 8. Create route data object
   const sessionId = request.sessionId || crypto.randomUUID();
